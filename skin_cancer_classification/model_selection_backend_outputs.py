@@ -142,15 +142,9 @@ def objective(trial):  # uses effnet
 
     train_data, test_data, val_data = read_three_datasets()
     # train_generator, validation_generator, test_generator = get_data_generators(num_desired_negative_train_examples, batch_size)
-    # test_generator = None #not used here
 
     # Define the CNN model
     model = Sequential()
-
-    # Load the respective EfficientNet model but exclude the classification layers
-    # trainable = False
-    # model_url = 'https://tfhub.dev/google/imagenet/efficientnet_v2_imagenet1k_b1/feature_vector/2'
-    # extractor = hub.KerasLayer(model_url, input_shape=INPUTSHAPE, trainable=trainable)
 
     ############ Optuna parameters
 
@@ -326,8 +320,8 @@ def objective(trial):  # uses effnet
             TFKerasPruningCallback(trial, metric_to_monitor),
             tensorboard,
         ],
+        workers=2,
     )
-    # CURRENT_MODEL = tf.keras.models.clone_model(model)
 
     # add to history
     history.history["num_desired_train_examples"] = num_train
@@ -340,7 +334,6 @@ def objective(trial):  # uses effnet
         pickle.dump(history.history, file_pi)
 
     # Evaluate the model accuracy on the validation set.
-    # score = model.evaluate(x_valid, y_valid, verbose=0)
 
     if True:
         # train data

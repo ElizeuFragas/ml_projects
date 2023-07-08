@@ -12,8 +12,6 @@ import os
 import pickle
 import shutil
 import sys
-import urllib
-import warnings
 from math import exp
 
 import matplotlib.pyplot as plt
@@ -211,7 +209,7 @@ def simple_NN_objective(trial):  # simple NN
     model.summary()
 
     # We compile our model with a sampled learning rate.
-    learning_rate = 1e-3  # trial.suggest_float("learning_rate", 1e-5, 1e-1, log=True)
+    learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-1, log=True)
 
     # Define the EarlyStopping callback
     if False:
@@ -283,6 +281,7 @@ def simple_NN_objective(trial):  # simple NN
             TFKerasPruningCallback(trial, metric_to_monitor[0]),
             tensorboard,
         ],
+        workers=2,
     )
 
     # add to history
@@ -347,7 +346,7 @@ if __name__ == "__main__":
     # study = optuna.create_study(direction="maximize")
     study = optuna.create_study(
         direction="maximize",
-        storage="sqlite:///../../outputs/optuna_db.sqlite3",  # Specify the storage URL here.
+        storage="sqlite:///../../outputs/optuna_db.sqlite3",
         sampler=optuna.samplers.TPESampler(),
         pruner=optuna.pruners.HyperbandPruner(),
     )
