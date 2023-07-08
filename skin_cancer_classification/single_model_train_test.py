@@ -1,5 +1,5 @@
 """
-v6    
+v6
 Uses datagen.flow_from_dataframe instead of datagen.flow_from_directory
 v5
 This version provides support to Resnet, and training some backend model layers
@@ -25,13 +25,33 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sn
-import sklearn.metrics
 import tensorflow as tf
 import tensorflow_hub as hub
 
 # To avoid the warning in
 # https://github.com/tensorflow/tensorflow/issues/47554
 from absl import logging
+from keras.applications.resnet import ResNet152, preprocess_input
+from keras.callbacks import (
+    EarlyStopping,
+    ModelCheckpoint,
+    ReduceLROnPlateau,
+    TensorBoard,
+)
+from keras.layers import (
+    Conv2D,
+    Dense,
+    Dropout,
+    Flatten,
+    GlobalAveragePooling2D,
+    Input,
+    MaxPooling2D,
+)
+from keras.models import Model, Sequential, load_model
+
+# import tf.keras.layers.GroupNormalization
+from keras.optimizers import Adam
+from keras.preprocessing.image import ImageDataGenerator
 from sklearn.metrics import (
     auc,
     confusion_matrix,
@@ -41,46 +61,8 @@ from sklearn.metrics import (
     recall_score,
     roc_curve,
 )
-from tensorflow.keras.applications.resnet import ResNet152, preprocess_input
-from tensorflow.keras.callbacks import (
-    EarlyStopping,
-    ModelCheckpoint,
-    ReduceLROnPlateau,
-    TensorBoard,
-)
-from tensorflow.keras.layers import (
-    Conv2D,
-    Dense,
-    Dropout,
-    Flatten,
-    GlobalAveragePooling2D,
-    Input,
-    MaxPooling2D,
-)
-from tensorflow.keras.models import Model, Sequential, load_model
-
-# import tf.keras.layers.GroupNormalization
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
 logging.set_verbosity(logging.ERROR)
-
-
-def get_training_model_xception(url, trainable=False):
-    # https://www.analyticsvidhya.com/blog/2022/04/binary-classification-on-skin-cancer-dataset-using-dl/
-    model = Sequential()
-    base = Xception(
-        include_top=False, weights="imagenet", input_shape=(200, 200, 3), pooling="avg"
-    )
-    for lay in base.layers:
-        lay.trainable = True  # false for transfer learning
-    model.add(base)
-    model.add(Dropout(0.5))
-    model.add(Flatten())
-    model.add(Dense(10, "relu"))
-    model.add(Dropout(0.5))
-    model.add(Dense(1, "sigmoid"))
-    return model
 
 
 def get_training_model_resnet(trainable=False):
@@ -110,37 +92,6 @@ def get_training_model_resnet(trainable=False):
             layer.trainable = True
 
     model = Model(inputs=base_model.input, outputs=predictions)
-
-    return model
-
-
-def get_training_model_effnet(url, trainable=False):
-    # Load the respective EfficientNet model but exclude the classification layers
-    extractor = hub.KerasLayer(
-        url, input_shape=(img_size, img_size, 3), trainable=trainable
-    )
-
-    # Construct the head of the model that will be placed on top of the
-    # the base model
-    model = tf.keras.models.Sequential(
-        [
-            extractor,
-            tf.keras.layers.Dropout(0.8),
-            tf.keras.layers.Dense(200, activation="relu"),
-            tf.keras.layers.BatchNormalization(),
-            # tf.keras.layers.Dense(80, activation="relu"),
-            # tf.keras.layers.BatchNormalization(),
-            # tf.keras.layers.Dropout(0.5),
-            # tf.keras.layers.Dense(60, activation="relu"),
-            # tf.keras.layers.BatchNormalization(),
-            # tf.keras.layers.Dropout(0.5),
-            tf.keras.layers.Dense(1, activation="sigmoid"),
-        ]
-    )
-
-    # layers = model.weights
-    # for i in range( len(layers) ):
-    #    print(i, layers[i].name)
 
     return model
 
@@ -287,7 +238,7 @@ if __name__ == "__main__":
 
     plt.close("all")
 
-    #%% CHECK ALL VARIABLES AND REPLACE VALUES AS NEEDED
+    # %% CHECK ALL VARIABLES AND REPLACE VALUES AS NEEDED
     simulation_ID = 22  # model from Optuna, but using AUC as loss instead of accuracy
     # --------------------------------------------------------------------------
     # num_desired_train_examples = 40
@@ -331,12 +282,6 @@ if __name__ == "__main__":
     train_csv = "../../data_ham1000/train.csv"
     test_csv = "../../data_ham1000/test.csv"
     validation_csv = "../../data_ham1000/validation.csv"
-
-    if False:
-        print(traindf.info())
-        print(traindf.head())
-        print(traindf.describe())
-        print(traindf.value_counts())
 
     if True:
         # do not remove header
@@ -387,7 +332,7 @@ if __name__ == "__main__":
         os.makedirs(output_dir)
         print("Created folder ", output_dir)
 
-    #%%
+    # %%
     # copy script
     copied_script = os.path.join(output_dir, os.path.basename(sys.argv[0]))
     shutil.copy2(sys.argv[0], copied_script)
@@ -460,7 +405,7 @@ if __name__ == "__main__":
         base_name = MODEL_NAME + str(num_desired_train_examples)
 
     # Define the EarlyStopping callback
-    metric_to_monitor = "val_auc"  #'val_accuracy'
+    metric_to_monitor = "val_auc"  # 'val_accuracy'
     metric_mode = "max"
     early_stopping = EarlyStopping(
         monitor=metric_to_monitor,
@@ -516,7 +461,6 @@ if __name__ == "__main__":
     # Save the last model
     # look at https://www.tensorflow.org/guide/keras/serialization_and_saving
     # do not use HDF5 (.h5 extension)
-    # last_model_name = 'last_model_' + base_name + '.h5'
     last_model_name = "last_model_" + base_name
     last_model_name = os.path.join(output_dir, last_model_name)
     print("Saving ", last_model_name, "...")

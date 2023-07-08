@@ -9,7 +9,7 @@ data  in a parent parant folder called ../../data_ham1000.
 Assume that all JPG images were manually copied to the same folder.
 For instance, I moved the files in the original folder
 HAM10000_images_part_2 into
-HAM10000_images_part_1, such that all JPG files are into a unique folder 
+HAM10000_images_part_1, such that all JPG files are into a unique folder
 (../../data_ham1000/HAM10000_images_part_1)
 """
 
