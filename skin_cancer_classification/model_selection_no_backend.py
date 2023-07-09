@@ -243,7 +243,7 @@ def simple_NN_objective(trial):  # simple NN
                     "activation", ["relu", "tanh", "elu", "swish"]
                 ),
                 padding="same",
-                # input_shape=INPUTSHAPE,
+                input_shape=INPUTSHAPE,
             )
         )
         # first and most important rule is: don't place a BatchNormalization after a Dropout
