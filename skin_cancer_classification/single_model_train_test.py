@@ -310,8 +310,8 @@ if __name__ == "__main__":
     print(validationdf["target"].value_counts())
 
     # Define the image size and other parameters
-    img_width = 120
-    img_height = 90
+    img_width = 240
+    img_height = 240
     image_size = (img_width, img_height)
     batch_size = 12
     epochs = 100
