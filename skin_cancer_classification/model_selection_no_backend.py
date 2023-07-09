@@ -12,6 +12,8 @@ import os
 import pickle
 import shutil
 import sys
+import urllib
+import warnings
 from math import exp
 
 import matplotlib.pyplot as plt
@@ -69,7 +71,7 @@ IMAGESIZE = (240, 240)  # Define the input shape of the images
 INPUTSHAPE = (240, 240, 3)  # NN input
 # BEST_MODEL = None # Best NN model
 # CURRENT_MODEL = None
-VERBOSITY_LEVEL = str(1)  # use 1 to see the progress bar when training and testing
+VERBOSITY_LEVEL = int(1)  # use 1 to see the progress bar when training and testing
 
 # Important: output folder
 OUTPUT_DIR = "../../outputs/optuna_no_backend_outputs/id_" + str(ID) + "/"
@@ -150,7 +152,9 @@ def save_best_model_callback(study, trial):
     )
     best_model_name = os.path.join(OUTPUT_DIR, best_model_name)
     if study.best_trial == trial:
+        # BEST_MODEL = CURRENT_MODEL
         print("Saving best model ", best_model_name, "...")
+        # BEST_MODEL.save(best_model_name)
 
 
 def simple_NN_objective(trial):  # simple NN
@@ -190,6 +194,7 @@ def simple_NN_objective(trial):  # simple NN
                 filters=num_conv_filters_per_layer[i],
                 # Define the size of the convolutional kernel
                 kernel_size=(kernel_size_per_layer[i], kernel_size_per_layer[i]),
+                # strides=trial.suggest_categorical("strides", [1, 2]),
                 activation=trial.suggest_categorical(
                     "activation", ["relu", "tanh", "elu", "swish"]
                 ),
@@ -209,7 +214,7 @@ def simple_NN_objective(trial):  # simple NN
     model.summary()
 
     # We compile our model with a sampled learning rate.
-    learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-1, log=True)
+    learning_rate = 1e-3  # trial.suggest_float("learning_rate", 1e-5, 1e-1, log=True)
 
     # Define the EarlyStopping callback
     if False:
@@ -225,6 +230,8 @@ def simple_NN_objective(trial):  # simple NN
     )
 
     # look at https://www.tensorflow.org/guide/keras/serialization_and_saving
+    # do not use HDF5 (.h5 extension)
+    # best_model_name = 'best_model_' + base_name + '.h5'
     best_model_name = "optuna_best_model_" + str(trial.number)
     best_model_name = os.path.join(OUTPUT_DIR, best_model_name)
     best_model_save = ModelCheckpoint(
@@ -238,13 +245,13 @@ def simple_NN_objective(trial):  # simple NN
         monitor=metric_to_monitor[0],
         factor=0.5,
         patience=3,
-        verbose=int(VERBOSITY_LEVEL),
+        verbose=VERBOSITY_LEVEL,
         min_delta=1e-4,
         mode=metric_mode,
     )
     # Define Tensorboard as a Keras callback
     tensorboard = TensorBoard(
-        log_dir="../../outputs/tensorboard_logs",
+        log_dir="../outputs/tensorboard_logs",
         histogram_freq=1,
         write_images=True,
     )
@@ -260,6 +267,7 @@ def simple_NN_objective(trial):  # simple NN
 
     model.compile(
         loss="binary_crossentropy",
+        # optimizer=RMSprop(learning_rate=learning_rate),
         optimizer=Adam(learning_rate=learning_rate),
         metrics=[
             "accuracy",
@@ -273,7 +281,6 @@ def simple_NN_objective(trial):  # simple NN
         steps_per_epoch=train_generator.samples // batch_size,
         epochs=EPOCHS,
         validation_data=validation_generator,
-        verbose=VERBOSITY_LEVEL,
         callbacks=[
             early_stopping,
             best_model_save,
@@ -281,8 +288,8 @@ def simple_NN_objective(trial):  # simple NN
             TFKerasPruningCallback(trial, metric_to_monitor[0]),
             tensorboard,
         ],
-        workers=2,
     )
+    # CURRENT_MODEL = tf.keras.models.clone_model(model)
 
     # add to history
     history.history["num_desired_train_examples"] = train_generator.samples
@@ -294,6 +301,9 @@ def simple_NN_objective(trial):  # simple NN
     with open(pickle_file_path, "wb") as file_pi:
         pickle.dump(history.history, file_pi)
 
+    # Evaluate the model accuracy on the validation set.
+    # score = model.evaluate(x_valid, y_valid, verbose=0)
+
     if True:
         # train data
         print("Train loss:", history.history["loss"][-1])
@@ -302,13 +312,14 @@ def simple_NN_objective(trial):  # simple NN
 
     if True:  # test data cannot be used in model selection. This is just sanity check
         test_loss, test_accuracy, test_auc = model.evaluate(
-            test_generator, verbose=VERBOSITY_LEVEL
+            test_generator, verbose=str(VERBOSITY_LEVEL)
         )
         print("Test loss:", test_loss)
         print("Test accuracy:", test_accuracy)
         print("Test AUC:", test_auc)
 
     # Evaluate the model accuracy on the validation set.
+    # val_loss, val_accuracy, val_auc = model.evaluate(validation_generator, verbose=VERBOSITY_LEVEL)
     val_accuracy = history.history["val_accuracy"][-1]
     val_auc = history.history["val_auc"][-1]
     print("Val loss:", history.history["val_loss"][-1])
@@ -346,17 +357,21 @@ if __name__ == "__main__":
     # study = optuna.create_study(direction="maximize")
     study = optuna.create_study(
         direction="maximize",
-        storage="sqlite:///../../outputs/optuna_db.sqlite3",
+        storage="sqlite:///../../outputs/optuna_db.sqlite3",  # Specify the storage URL here.
+        study_name="ID_" + str(ID),
         sampler=optuna.samplers.TPESampler(),
         pruner=optuna.pruners.HyperbandPruner(),
     )
+    # study.optimize(objective, n_trials=100)
     pruned_trials = study.get_trials(
         deepcopy=False, states=[optuna.trial.TrialState.PRUNED]
     )
     complete_trials = study.get_trials(
         deepcopy=False, states=[optuna.trial.TrialState.COMPLETE]
     )
-    study.optimize(simple_NN_objective, n_trials=40)
+    study.optimize(
+        simple_NN_objective, n_trials=40
+    )  # , callbacks=[save_best_model_callback]) #, timeout=600)
 
     print("Number of finished trials: {}".format(len(study.trials)))
 
