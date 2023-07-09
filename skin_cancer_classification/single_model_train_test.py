@@ -97,10 +97,6 @@ def get_training_model_resnet(trainable=False):
 
 
 def get_training_model_fixed():
-    # img_width = 240
-    # img_height = 240
-    # original images have width = 600 and height = 450 pixels
-    # divide by 5:
     img_width = 120
     img_height = 90
     # Define the input shape of the images
@@ -338,9 +334,9 @@ if __name__ == "__main__":
     shutil.copy2(sys.argv[0], copied_script)
     print("Just copied current script as file", copied_script)
 
-    # model = get_training_model_effnet(model_url, trainable=False)
-    model = get_training_model_resnet(trainable=False)
-    # model = get_training_model_fixed()
+    model = load_model(
+        "../../outputs/optuna_no_backend_outputs/id_1/optuna_best_model_33",
+    )
     print("just got the model")
 
     model.compile(
@@ -443,7 +439,7 @@ if __name__ == "__main__":
 
     # Define Tensorboard as a Keras callback
     tensorboard = TensorBoard(
-        log_dir=os.path.join("../outputs/tensorboard_logs", base_name),
+        log_dir=os.path.join("../../outputs/tensorboard_logs", base_name),
         # log_dir= '.\logs',
         histogram_freq=1,
         write_images=True,
