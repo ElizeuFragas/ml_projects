@@ -71,7 +71,7 @@ IMAGESIZE = (240, 240)  # Define the input shape of the images
 INPUTSHAPE = (240, 240, 3)  # NN input
 # BEST_MODEL = None # Best NN model
 # CURRENT_MODEL = None
-VERBOSITY_LEVEL = int(1)  # use 1 to see the progress bar when training and testing
+VERBOSITY_LEVEL = 1  # use 1 to see the progress bar when training and testing
 
 # Important: output folder
 OUTPUT_DIR = "../../outputs/optuna_no_backend_outputs/id_" + str(ID) + "/"
@@ -102,6 +102,14 @@ def get_data_generators(num_desired_negative_train_examples, batch_size):
 
     testdf = decrease_num_negatives(testdf, 184)
     validationdf = decrease_num_negatives(validationdf, 76)
+
+    if False:
+        print("train:")
+        print(traindf["target"].value_counts())
+        print("test:")
+        print(testdf["target"].value_counts())
+        print("validation:")
+        print(validationdf["target"].value_counts())
 
     train_datagen = ImageDataGenerator(rescale=1.0 / 255)
 
@@ -167,6 +175,7 @@ def simple_NN_objective(trial):  # simple NN
     train_generator, validation_generator, test_generator = get_data_generators(
         num_desired_negative_train_examples, batch_size
     )
+    # test_generator = None #not used here
 
     # Define the CNN model
     model = Sequential()
@@ -177,10 +186,45 @@ def simple_NN_objective(trial):  # simple NN
         num_kernel_size_L1 = 8
         num_conv_filters_L2 = 53
         num_kernel_size_L2 = 5
+        # dropout: 0.283067301713822
+        # use_batch_normalization: False
         num_conv_filters_per_layer = np.array(
             [num_conv_filters_L1, num_conv_filters_L2]
         )
         kernel_size_per_layer = np.array([num_kernel_size_L1, num_kernel_size_L2])
+    else:
+        num_conv_layers = trial.suggest_int(
+            "num_conv_layers", 2, 3
+        )  # up to four conv layers
+        num_conv_filters_per_layer = np.zeros(num_conv_layers, dtype=np.int64)
+        kernel_size_per_layer = np.zeros(num_conv_layers, dtype=np.int64)
+        num_conv_filters_per_layer[0] = trial.suggest_int("num_conv_filters_L1", 20, 60)
+        kernel_size_per_layer[0] = trial.suggest_int("num_kernel_size_L1", 3, 13)
+        for i in range(num_conv_layers - 1):
+            # force number of filter to not increase
+            num_conv_filters_per_layer[i + 1] = trial.suggest_int(
+                "num_conv_filters_L{}".format(i + 2),
+                num_conv_filters_per_layer[i] // 2,
+                num_conv_filters_per_layer[i],
+            )
+            kernel_size_per_layer[i + 1] = trial.suggest_int(
+                "num_kernel_size_L{}".format(i + 2),
+                (1 + kernel_size_per_layer[i]) // 2,
+                kernel_size_per_layer[i],
+            )
+        # check consistency of choices
+        for i in range(num_conv_layers):
+            tensor_size_in_layer = 240 / (
+                2 ** (i + 1)
+            )  # find tensor size in pixels, in this layer
+            print("tensor_size_in_layer =", tensor_size_in_layer)
+            if kernel_size_per_layer[i] > tensor_size_in_layer:
+                kernel_size_per_layer[i] = tensor_size_in_layer / 2
+            # force number of filter to not increase
+            if kernel_size_per_layer[i] < 2:
+                kernel_size_per_layer[i] = 2
+            if num_conv_filters_per_layer[i] < 2:
+                num_conv_filters_per_layer[i] = 2
 
     print("kernel_size_per_layer =", kernel_size_per_layer)
     print("num_conv_filters_per_layer =", num_conv_filters_per_layer)
@@ -199,7 +243,7 @@ def simple_NN_objective(trial):  # simple NN
                     "activation", ["relu", "tanh", "elu", "swish"]
                 ),
                 padding="same",
-                input_shape=INPUTSHAPE,
+                # input_shape=INPUTSHAPE,
             )
         )
         # first and most important rule is: don't place a BatchNormalization after a Dropout
@@ -218,7 +262,9 @@ def simple_NN_objective(trial):  # simple NN
 
     # Define the EarlyStopping callback
     if False:
-        metric_to_monitor = ("val_accuracy",)
+        metric_to_monitor = (
+            "val_accuracy",
+        )  # trial.suggest_categorical("metric_to_monitor", ['val_accuracy', 'val_auc']),
     else:
         metric_to_monitor = ("val_auc",)
     metric_mode = "max"
@@ -228,6 +274,7 @@ def simple_NN_objective(trial):  # simple NN
         mode=metric_mode,
         restore_best_weights=True,
     )
+    # early_stopping = EarlyStopping(monitor='val_auc', patience=5)
 
     # look at https://www.tensorflow.org/guide/keras/serialization_and_saving
     # do not use HDF5 (.h5 extension)
@@ -252,6 +299,7 @@ def simple_NN_objective(trial):  # simple NN
     # Define Tensorboard as a Keras callback
     tensorboard = TensorBoard(
         log_dir="../outputs/tensorboard_logs",
+        # log_dir= '.\logs',
         histogram_freq=1,
         write_images=True,
     )
@@ -281,6 +329,10 @@ def simple_NN_objective(trial):  # simple NN
         steps_per_epoch=train_generator.samples // batch_size,
         epochs=EPOCHS,
         validation_data=validation_generator,
+        verbose=str(VERBOSITY_LEVEL),
+        # callbacks=[early_stopping,reduce_lr_loss, tensorboard]
+        # callbacks=[TFKerasPruningCallback(trial, metric_to_monitor), early_stopping]
+        # callbacks=[early_stopping, best_model_save, reduce_lr_loss]
         callbacks=[
             early_stopping,
             best_model_save,
@@ -322,6 +374,10 @@ def simple_NN_objective(trial):  # simple NN
     # val_loss, val_accuracy, val_auc = model.evaluate(validation_generator, verbose=VERBOSITY_LEVEL)
     val_accuracy = history.history["val_accuracy"][-1]
     val_auc = history.history["val_auc"][-1]
+    # print('Val loss:', val_loss)
+    # print('Val accuracy:', val_accuracy)
+    # print('Val AUC:', val_auc)
+    # avoid above by using pre-calculated:
     print("Val loss:", history.history["val_loss"][-1])
     print("Val accuracy:", val_accuracy)
     print("Val AUC:", val_auc)
@@ -357,8 +413,6 @@ if __name__ == "__main__":
     # study = optuna.create_study(direction="maximize")
     study = optuna.create_study(
         direction="maximize",
-        storage="sqlite:///../../outputs/optuna_db.sqlite3",  # Specify the storage URL here.
-        study_name="ID_" + str(ID),
         sampler=optuna.samplers.TPESampler(),
         pruner=optuna.pruners.HyperbandPruner(),
     )
@@ -410,16 +464,20 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, "optuna_optimization_history.png"))
     plt.close("all")
+    # fig.show()
     optuna.visualization.matplotlib.plot_intermediate_values(
         study
     )  # Visualize the loss curves of the trials
     plt.savefig(os.path.join(OUTPUT_DIR, "optuna_loss_curves.png"))
+    # fig.show()
     plt.close("all")
     optuna.visualization.matplotlib.plot_contour(study)  # Parameter contour plots
     plt.savefig(os.path.join(OUTPUT_DIR, "optuna_contour_plots.png"))
+    # fig.show()
     plt.close("all")
     optuna.visualization.matplotlib.plot_param_importances(
         study
     )  # parameter importance plot
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, "optuna_parameter_importance.png"))
+    # fig.show()
