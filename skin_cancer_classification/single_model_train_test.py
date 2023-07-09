@@ -32,24 +32,9 @@ import tensorflow_hub as hub
 # https://github.com/tensorflow/tensorflow/issues/47554
 from absl import logging
 from keras.applications.resnet import ResNet152, preprocess_input
-from keras.callbacks import (
-    EarlyStopping,
-    ModelCheckpoint,
-    ReduceLROnPlateau,
-    TensorBoard,
-)
-from keras.layers import (
-    Conv2D,
-    Dense,
-    Dropout,
-    Flatten,
-    GlobalAveragePooling2D,
-    Input,
-    MaxPooling2D,
-)
-from keras.models import Model, Sequential, load_model
-
-# import tf.keras.layers.GroupNormalization
+from keras.callbacks import EarlyStopping, ModelCheckpoint, TensorBoard
+from keras.layers import Conv2D, Dense, Dropout, Flatten, MaxPooling2D
+from keras.models import Sequential, load_model
 from keras.optimizers import Adam
 from keras.preprocessing.image import ImageDataGenerator
 from sklearn.metrics import (
@@ -63,37 +48,6 @@ from sklearn.metrics import (
 )
 
 logging.set_verbosity(logging.ERROR)
-
-
-def get_training_model_resnet(trainable=False):
-    # from https://www.apriorit.com/dev-blog/647-ai-applying-deep-learning-to-classify-skin-cancer-types
-    # Download data from https://storage.googleapis.com/tensorflow/keras-applications/resnet/resnet152_weights_tf_dim_ordering_tf_kernels_notop.h5
-    base_model = ResNet152(weights="imagenet", include_top=False)
-    x = base_model.output
-    x = GlobalAveragePooling2D()(x)
-    # x = Dense(1000, activation='relu')(x)
-    x = Dense(100, activation="relu")(x)
-    x = Dropout(0.25)(x)
-    predictions = Dense(1, activation="sigmoid")(x)
-
-    for i, layer in enumerate(base_model.layers):
-        print(i, layer.name)
-
-    if True:
-        # freeze all layers
-        for layer in base_model.layers:
-            layer.trainable = False
-    else:
-        # freeze up to given layer
-        layer_num = 483
-        for layer in base_model.layers[:layer_num]:
-            layer.trainable = False
-        for layer in base_model.layers[layer_num:]:
-            layer.trainable = True
-
-    model = Model(inputs=base_model.input, outputs=predictions)
-
-    return model
 
 
 def get_training_model_fixed():
@@ -237,38 +191,12 @@ if __name__ == "__main__":
     # %% CHECK ALL VARIABLES AND REPLACE VALUES AS NEEDED
     simulation_ID = 22  # model from Optuna, but using AUC as loss instead of accuracy
     # --------------------------------------------------------------------------
-    # num_desired_train_examples = 40
-    # img_size = 240
-    # model_url = 'https://tfhub.dev/google/efficientnet/b1/feature-vector/1' #non-trainable
-    # model_url = 'https://tfhub.dev/google/efficientnet/b1/classification/1'
-
-    # From https://colab.research.google.com/github/tensorflow/hub/blob/master/examples/colab/tf2_image_retraining.ipynb?hl=vi#scrollTo=FlsEcKVeuCnf
-    # Find models at https://tfhub.dev/google/collections/efficientnet_v2/1
     # Choose the model
     if True:
         # Model with 7 M parameters
         MODEL_URL = "https://tfhub.dev/google/imagenet/efficientnet_v2_imagenet1k_b1/feature_vector/2"
         MODEL_NAME = "efficientnet_v2_imagenet1k_b1"
         NUM_PIXELS = 240
-    else:
-        # Model with 200 M parameters
-        MODEL_URL = "https://tfhub.dev/google/imagenet/efficientnet_v2_imagenet21k_ft1k_xl/feature_vector/2"
-        MODEL_NAME = "efficientnet_v2_imagenet21k_ft1k_xl"
-        NUM_PIXELS = 512  # Define the input shape of the images
-
-    # MODEL_URL = 'https://tfhub.dev/google/imagenet/efficientnet_v2_imagenet1k_b1/feature_vector/2'
-    # use_augment = False
-    # type_augment = "Albumentations"
-    # test_id = str(simulation_ID) #test number
-    # data_id = "unbal" #ratio
-    # effnet_model = str(1)
-    # --------------------------------------------------------------------------
-
-    # Define the folders for train, validation, and test data
-    # Laptop:
-    # train_folder = 'D:/temp/test_50percent_teste4/train_50percent_teste4/'
-    # validation_folder = 'D:/temp/test_50percent_teste4/val_50percent_teste4/'
-    # test_folder = 'D:/temp/test_50percent_teste4/test_50percent_teste4'
 
     # Define the folders for train, validation, and test data
     train_folder = "../../data_ham1000/HAM10000_images_part_1/"
@@ -284,11 +212,6 @@ if __name__ == "__main__":
         traindf = pd.read_csv(train_csv, dtype=str)
         testdf = pd.read_csv(test_csv, dtype=str)
         validationdf = pd.read_csv(validation_csv, dtype=str)
-    else:
-        # remove header
-        traindf = pd.read_csv(train_csv, dtype=str, header=None)
-        testdf = pd.read_csv(test_csv, dtype=str, header=None)
-        validationdf = pd.read_csv(validation_csv, dtype=str, header=None)
 
     if num_desired_train_examples != -1:
         num_desired_negative_train_examples = np.floor(num_desired_train_examples / 2.0)
@@ -298,9 +221,6 @@ if __name__ == "__main__":
         traindf = get_balanced_dataframe(
             traindf, num_desired_negative_train_examples, desired_num_positive_examples
         )
-
-        # testdf = decrease_num_negatives(testdf, 184)
-        # validationdf = decrease_num_negatives(validationdf, 76)
 
     print("train:")
     print(traindf["target"].value_counts())
@@ -338,11 +258,13 @@ if __name__ == "__main__":
         "../../outputs/optuna_no_backend_outputs/id_1/optuna_best_model_33",
     )
     print("just got the model")
+    precision = tf.keras.metrics.Precision(name="precision")
+    recall = tf.keras.metrics.Recall(name="recall")
 
     model.compile(
         loss="binary_crossentropy",
         optimizer=Adam(learning_rate=0.005),
-        metrics=["accuracy", tf.keras.metrics.AUC()],
+        metrics=["accuracy", tf.keras.metrics.AUC(), precision, recall],
     )
     # metrics=["accuracy"])
 
@@ -388,8 +310,6 @@ if __name__ == "__main__":
     )
 
     # Count effective number of examples, to make sure
-    # print(train_generator.classes)  # numpy array with all labels
-    # actual_num_desired_train_examples = train_generator.classes.shape[0]  #flow from directory
     actual_num_desired_train_examples = train_generator.n  # flow from dataframe
     print("actual_num_desired_train_examples=", actual_num_desired_train_examples)
     if actual_num_desired_train_examples != num_desired_train_examples:
@@ -409,11 +329,9 @@ if __name__ == "__main__":
         mode=metric_mode,
         restore_best_weights=True,
     )
-    # early_stopping = EarlyStopping(monitor='val_auc', patience=5)
 
     # look at https://www.tensorflow.org/guide/keras/serialization_and_saving
     # do not use HDF5 (.h5 extension)
-    # best_model_name = 'best_model_' + base_name + '.h5'
     best_model_name = "best_model_" + base_name
     best_model_name = os.path.join(output_dir, best_model_name)
     mcp_save = ModelCheckpoint(
@@ -423,24 +341,12 @@ if __name__ == "__main__":
         mode=metric_mode,
     )
     # Choose the learning rate strategy
-    if False:
-        # reduce when chosen metric does not improve
-        reduce_lr = ReduceLROnPlateau(
-            monitor=metric_to_monitor,
-            factor=0.5,
-            patience=3,
-            verbose=1,
-            min_delta=1e-5,
-            mode=metric_mode,
-        )
-    else:
-        # reduce as training evolves over time
-        reduce_lr = tf.keras.callbacks.LearningRateScheduler(lr_scheduler)
+    # reduce as training evolves over time
+    reduce_lr = tf.keras.callbacks.LearningRateScheduler(lr_scheduler)
 
     # Define Tensorboard as a Keras callback
     tensorboard = TensorBoard(
         log_dir=os.path.join("../../outputs/tensorboard_logs", base_name),
-        # log_dir= '.\logs',
         histogram_freq=1,
         write_images=True,
     )
@@ -489,10 +395,8 @@ if __name__ == "__main__":
     plt.xlabel("Epoch")
     plt.ylabel("Metric")
     plt.legend()
-    # plt.show()
 
     metrics_name = "metrics_" + base_name + ".png"
-    # plt.title('Metrics - ' + title_id)
     plt.savefig(os.path.join(output_dir, metrics_name))
 
     # Convert predictions into values 0 or 1
@@ -530,10 +434,8 @@ if __name__ == "__main__":
     # Plot confusion matrix with Seaborn
     plt.figure()
     sn.heatmap(cm, annot=True, fmt="d")
-    # plt.title('Confusion matrix - ' + title_id)
     plt.xlabel("Predicted label")
     plt.ylabel("True label")
-    # plt.show()
 
     # save the cm
     cm_filename = "cm_" + base_name + ".png"
