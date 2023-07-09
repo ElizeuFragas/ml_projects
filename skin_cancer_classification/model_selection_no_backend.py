@@ -29,17 +29,20 @@ import tensorflow_hub as hub
 # To avoid the warning in
 # https://github.com/tensorflow/tensorflow/issues/47554
 from absl import logging
-from keras import regularizers
-from keras.applications.resnet import ResNet152, preprocess_input
 from keras.backend import clear_session
-from keras.callbacks import (
+from keras.datasets import mnist
+from keras.layers import Conv2D, Dense, Flatten
+from keras.models import Sequential
+from optuna.integration import TFKerasPruningCallback
+from tensorflow.keras import regularizers
+from tensorflow.keras.applications.resnet import ResNet152, preprocess_input
+from tensorflow.keras.callbacks import (
     EarlyStopping,
     ModelCheckpoint,
     ReduceLROnPlateau,
     TensorBoard,
 )
-from keras.datasets import mnist
-from keras.layers import (
+from tensorflow.keras.layers import (
     BatchNormalization,
     Conv2D,
     Dense,
@@ -52,17 +55,25 @@ from keras.layers import (
 
 # import sklearn.metrics
 # from sklearn.metrics import confusion_matrix, roc_curve, auc, recall_score, f1_score, precision_score, precision_recall_curve
-from keras.models import Model, Sequential, load_model
-from keras.optimizers import Adam, RMSprop
+from tensorflow.keras.models import Model, Sequential, load_model
+from tensorflow.keras.optimizers import Adam, RMSprop
 
 # import tensorflow_hub as hub
-from keras.preprocessing.image import ImageDataGenerator
-from optuna.integration import TFKerasPruningCallback
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
 logging.set_verbosity(logging.ERROR)
 
 # gpus = tf.config.experimental.list_physical_devices('GPU')
 # tf.config.experimental.set_memory_growth(gpus[0], True)
+if False:
+    from tensorflow.compat.v1 import ConfigProto, InteractiveSession
+
+    def fix_gpu():
+        config = ConfigProto()
+        config.gpu_options.allow_growth = True
+        session = InteractiveSession(config=config)
+
+    fix_gpu()
 
 # Global variables
 ID = 24  # identifier for this simulation - use effnet as backend using val acc instead of AUC (23)
@@ -165,6 +176,242 @@ def save_best_model_callback(study, trial):
         # BEST_MODEL.save(best_model_name)
 
 
+def objective(trial):  # uses effnet
+    # Clear clutter from previous Keras session graphs.
+    clear_session()
+
+    num_output_neurons = 1
+
+    batch_size = trial.suggest_int("batch_size", 1, 15)
+    train_generator, validation_generator, test_generator = get_data_generators(
+        num_desired_negative_train_examples, batch_size
+    )
+    # test_generator = None #not used here
+
+    # Define the CNN model
+    model = Sequential()
+
+    # Load the respective EfficientNet model but exclude the classification layers
+    trainable = False
+    model_url = "https://tfhub.dev/google/imagenet/efficientnet_v2_imagenet1k_b1/feature_vector/2"
+    extractor = hub.KerasLayer(model_url, input_shape=INPUTSHAPE, trainable=trainable)
+
+    if False:
+        num_dense_layers = 2
+        num_neurons_L1 = 60
+        num_neurons_L2 = 53
+        # dropout: 0.283067301713822
+        # use_batch_normalization: False
+        num_neurons_per_layer = np.array([num_neurons_L1, num_neurons_L2])
+    else:
+        num_dense_layers = trial.suggest_int(
+            "num_dense_layers", 0, 3
+        )  # number of layers
+        if num_dense_layers > 0:
+            num_neurons_per_layer = np.zeros(num_dense_layers, dtype=np.int64)
+            num_neurons_per_layer[0] = trial.suggest_int("num_neurons_L1", 10, 300)
+            for i in range(num_dense_layers - 1):
+                # force number of neurons to not increase
+                num_neurons_per_layer[i + 1] = trial.suggest_int(
+                    "num_neurons_L{}".format(i + 2),
+                    num_neurons_per_layer[i] // 4,
+                    num_neurons_per_layer[i],
+                )
+
+            print("num_neurons_per_layer =", num_neurons_per_layer)
+    dropout_rate = trial.suggest_float("dropout", 0.1, 0.9)
+
+    use_batch_normalization = (
+        False  # trial.suggest_categorical("batch_nor", [True, False])
+    )
+    use_regularizers = trial.suggest_categorical("regul", [True, False])
+    if use_regularizers:
+        l1_weight = trial.suggest_categorical("l1_weight", [0, 1e-4, 1e-2])
+        l2_weight = trial.suggest_categorical("l2_weight", [0, 1e-4, 1e-2])
+
+    model.add(extractor)
+    for i in range(num_dense_layers):
+        if use_regularizers:
+            model.add(
+                Dense(
+                    # Define the number of neurons for this layer
+                    num_neurons_per_layer[i],
+                    activation=trial.suggest_categorical(
+                        "activation", ["tanh", "elu", "swish"]
+                    ),
+                    # input_shape=INPUTSHAPE,
+                    kernel_regularizer=regularizers.L1L2(l1=l1_weight, l2=l2_weight),
+                    bias_regularizer=regularizers.L2(l2_weight),
+                    activity_regularizer=regularizers.L2(l2_weight),
+                )
+            )
+        else:
+            model.add(
+                Dense(
+                    # Define the number of neurons for this layer
+                    num_neurons_per_layer[i],
+                    activation=trial.suggest_categorical(
+                        "activation", ["tanh", "elu", "swish"]
+                    ),
+                    # input_shape=INPUTSHAPE
+                )
+            )
+        # first and most important rule is: don't place a BatchNormalization after a Dropout
+        # https://stackoverflow.com/questions/59634780/correct-order-for-spatialdropout2d-batchnormalization-and-activation-function
+        if use_batch_normalization:
+            model.add(BatchNormalization())
+        model.add(Dropout(dropout_rate))
+    if use_regularizers:
+        model.add(
+            Dense(
+                num_output_neurons,
+                activation="sigmoid",
+                kernel_regularizer=regularizers.L1L2(l1=l1_weight, l2=l2_weight),
+                bias_regularizer=regularizers.L2(l2_weight),
+                activity_regularizer=regularizers.L2(l2_weight),
+            )
+        )
+    else:
+        model.add(Dense(num_output_neurons, activation="sigmoid"))
+
+    model.summary()
+
+    # We compile our model with a sampled learning rate.
+    learning_rate = 1e-3  # trial.suggest_float("learning_rate", 1e-5, 1e-1, log=True)
+
+    # Define the metric for callbacks and Optuna
+    if True:
+        metric_to_monitor = (
+            "val_accuracy",
+        )  # trial.suggest_categorical("metric_to_monitor", ['val_accuracy', 'val_auc']),
+    else:
+        metric_to_monitor = ("val_auc",)
+    metric_mode = "max"
+    early_stopping = EarlyStopping(
+        monitor=metric_to_monitor[0],
+        patience=3,
+        mode=metric_mode,
+        restore_best_weights=True,
+    )
+    # early_stopping = EarlyStopping(monitor='val_auc', patience=5)
+
+    # look at https://www.tensorflow.org/guide/keras/serialization_and_saving
+    # do not use HDF5 (.h5 extension)
+    # best_model_name = 'best_model_' + base_name + '.h5'
+    best_model_name = "optuna_best_model_" + str(trial.number)
+    best_model_name = os.path.join(OUTPUT_DIR, best_model_name)
+    best_model_save = ModelCheckpoint(
+        best_model_name,
+        save_best_only=True,
+        monitor=metric_to_monitor[0],
+        mode=metric_mode,
+    )
+
+    reduce_lr_loss = ReduceLROnPlateau(
+        monitor=metric_to_monitor[0],
+        factor=0.5,
+        patience=3,
+        verbose=VERBOSITY_LEVEL,
+        min_delta=1e-4,
+        mode=metric_mode,
+    )
+    # Define Tensorboard as a Keras callback
+    tensorboard = TensorBoard(
+        log_dir="../outputs/tensorboard_logs",
+        # log_dir= '.\logs',
+        histogram_freq=1,
+        write_images=True,
+    )
+
+    print("")
+    print("------------------------------------------------------------")
+    print("------------------------------------------------------------")
+    print("  Hyperparameters of Optuna trial # ", trial.number)
+    print("------------------------------------------------------------")
+    print("------------------------------------------------------------")
+    for key, value in trial.params.items():
+        print("    {}: {}".format(key, value))
+
+    model.compile(
+        loss="binary_crossentropy",
+        # optimizer=RMSprop(learning_rate=learning_rate),
+        optimizer=Adam(learning_rate=learning_rate),
+        metrics=[
+            "accuracy",
+            tf.keras.metrics.AUC(),
+        ],  # always use both metrics, and choose one to guide Optuna
+    )
+
+    # Training the model
+    history = model.fit(
+        train_generator,
+        steps_per_epoch=train_generator.samples // batch_size,
+        epochs=EPOCHS,
+        validation_data=validation_generator,
+        verbose=VERBOSITY_LEVEL,
+        # callbacks=[early_stopping,reduce_lr_loss, tensorboard]
+        # callbacks=[TFKerasPruningCallback(trial, metric_to_monitor), early_stopping]
+        # callbacks=[early_stopping, best_model_save, reduce_lr_loss]
+        callbacks=[
+            early_stopping,
+            best_model_save,
+            reduce_lr_loss,
+            TFKerasPruningCallback(trial, metric_to_monitor[0]),
+        ],
+    )
+    # CURRENT_MODEL = tf.keras.models.clone_model(model)
+
+    # add to history
+    history.history["num_desired_train_examples"] = train_generator.samples
+
+    # https://stackoverflow.com/questions/41061457/keras-how-to-save-the-training-history-attribute-of-the-history-object
+    pickle_file_path = os.path.join(
+        OUTPUT_DIR, "optuna_best_model_" + str(trial.number), "trainHistoryDict.pickle"
+    )
+    with open(pickle_file_path, "wb") as file_pi:
+        pickle.dump(history.history, file_pi)
+
+    # Evaluate the model accuracy on the validation set.
+    # score = model.evaluate(x_valid, y_valid, verbose=0)
+
+    if True:
+        # train data
+        print("Train loss:", history.history["loss"][-1])
+        print("Train accuracy:", history.history["accuracy"][-1])
+        print("Train AUC:", history.history["auc"][-1])
+
+    if True:  # test data cannot be used in model selection. This is just sanity check
+        test_loss, test_accuracy, test_auc = model.evaluate(
+            test_generator, verbose=VERBOSITY_LEVEL
+        )
+        print("Test loss:", test_loss)
+        print("Test accuracy:", test_accuracy)
+        print("Test AUC:", test_auc)
+
+    # Evaluate the model accuracy on the validation set.
+    # val_loss, val_accuracy, val_auc = model.evaluate(validation_generator, verbose=VERBOSITY_LEVEL)
+    val_accuracy = history.history["val_accuracy"][-1]
+    val_auc = history.history["val_auc"][-1]
+    # print('Val loss:', val_loss)
+    # print('Val accuracy:', val_accuracy)
+    # print('Val AUC:', val_auc)
+    # avoid above by using pre-calculated:
+    print("Val loss:", history.history["val_loss"][-1])
+    print("Val accuracy:", val_accuracy)
+    print("Val AUC:", val_auc)
+
+    # Optuna needs to use the same metric for all evaluations (it could be val_accuracy or val_auc but one cannot change it for each trial)
+
+    if (
+        metric_to_monitor[0] == "val_accuracy"
+    ):  # trial.suggest_categorical("metric_to_monitor", ['val_accuracy', 'val_auc']),
+        return val_accuracy
+    elif metric_to_monitor[0] == "val_auc":
+        return val_auc
+    else:
+        raise Exception("Metric must be val_auc or val_accuracy")
+
+
 def simple_NN_objective(trial):  # simple NN
     # Clear clutter from previous Keras session graphs.
     clear_session()
@@ -176,6 +423,23 @@ def simple_NN_objective(trial):  # simple NN
         num_desired_negative_train_examples, batch_size
     )
     # test_generator = None #not used here
+
+    if False:
+        model.add(
+            Conv2D(num_filters, (20, 20), input_shape=INPUTSHAPE, activation="relu")
+        )
+        model.add(MaxPooling2D(pool_size))
+        model.add(Conv2D(num_filters, (10, 10), activation="relu"))
+        model.add(MaxPooling2D(pool_size))
+        model.add(Conv2D(num_filters, (8, 8), activation="relu"))
+        model.add(MaxPooling2D(pool_size))
+        model.add(Conv2D(num_filters, kernel_size, activation="relu"))
+        model.add(MaxPooling2D(pool_size))
+        model.add(Conv2D(num_filters, kernel_size, activation="relu"))
+        model.add(MaxPooling2D(pool_size))
+        model.add(Flatten())
+        model.add(Dense(32, activation="relu"))
+        model.add(Dense(num_output_neurons, activation="sigmoid"))
 
     # Define the CNN model
     model = Sequential()
@@ -329,7 +593,7 @@ def simple_NN_objective(trial):  # simple NN
         steps_per_epoch=train_generator.samples // batch_size,
         epochs=EPOCHS,
         validation_data=validation_generator,
-        verbose=str(VERBOSITY_LEVEL),
+        verbose=VERBOSITY_LEVEL,
         # callbacks=[early_stopping,reduce_lr_loss, tensorboard]
         # callbacks=[TFKerasPruningCallback(trial, metric_to_monitor), early_stopping]
         # callbacks=[early_stopping, best_model_save, reduce_lr_loss]
@@ -364,7 +628,7 @@ def simple_NN_objective(trial):  # simple NN
 
     if True:  # test data cannot be used in model selection. This is just sanity check
         test_loss, test_accuracy, test_auc = model.evaluate(
-            test_generator, verbose=str(VERBOSITY_LEVEL)
+            test_generator, verbose=VERBOSITY_LEVEL
         )
         print("Test loss:", test_loss)
         print("Test accuracy:", test_accuracy)
@@ -413,6 +677,8 @@ if __name__ == "__main__":
     # study = optuna.create_study(direction="maximize")
     study = optuna.create_study(
         direction="maximize",
+        storage="sqlite:///../../outputs/optuna_db.sqlite3",  # Specify the storage URL here.
+        study_name="ID_" + str(ID),
         sampler=optuna.samplers.TPESampler(),
         pruner=optuna.pruners.HyperbandPruner(),
     )

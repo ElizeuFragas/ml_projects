@@ -317,7 +317,7 @@ def objective(trial):  # uses effnet
             early_stopping,
             best_model_save,
             reduce_lr_loss,
-            TFKerasPruningCallback(trial, metric_to_monitor),
+            TFKerasPruningCallback(trial, metric_to_monitor),  # type: ignore
             tensorboard,
         ],
         workers=2,
